@@ -1,0 +1,198 @@
+---
+title: "Gunner Pool 2024"
+output: html_document
+date: "2024-03-12"
+---
+```{r}
+#| label: load packages
+#| error: FALSE
+#| message: FALSE
+
+library(tidyverse)
+library(tidymodels)
+library(ggplot2)
+library(leaps)
+library(MASS)
+library(glmnet)
+library(caret)
+```
+
+
+```{r}
+#| label: load data and put in one df
+#| message: FALSE
+
+MM_2022 <- read_csv("data/stats_2022.csv")
+MM_2023 <- read_csv("data/stats_2023.csv")
+MM_2024 <- read_csv("data/stats_2024.csv")
+
+MM_2023 <- MM_2023 |> rename(`PPG (reg. season)` = `PPG (regular season)`,
+                             `Adj. O (KP)` = `Adj. O (KenPom)`,
+                             `Adj. D (KP)` = `Adj. D (KenPom)`,
+                             `KenPom Rank` = `Team KenPom`)
+
+MM_2024 <- MM_2024 |> rename(`PPG (reg. season)` = `PPG (regular season)`,
+                             `Adj. O (KP)` = `Adj. O (KenPom)`,
+                             `Adj. D (KP)` = `Adj. D (KenPom)`,
+                             `KenPom Rank` = `Team KenPom`)
+
+all_past_MM <- merge(MM_2022, MM_2023, all = TRUE)
+all_past_MM$...8 <- NULL
+all_past_MM <- all_past_MM |> drop_na()
+MM_2024$...8 <- NULL
+MM_2024 <- MM_2024 |> drop_na()
+```
+
+```{r}
+#| label: exploratory data analysis
+
+ggplot(all_past_MM, aes(x = `KenPom Rank`, y = `Total Points in Tourney`, color = `PPG (reg. season)`)) +
+  geom_point() +
+  scale_color_gradient(low = "yellow", high = "red")
+```
+
+```{r}
+#| label: more eda
+
+ggplot(all_past_MM, aes(x = `Total Points in Tourney`)) +
+  geom_bar(bins = 10)
+```
+
+
+```{r}
+#| label: simple linear model
+
+m1 <- lm(`Total Points in Tourney` ~ `PPG (reg. season)` + `KenPom Rank`, 
+         data = all_past_MM)
+summary(m1)
+```
+
+```{r}
+#| label: residual plot
+
+m1_aug <- augment(m1)
+ggplot(m1_aug, aes(x = .fitted, y = .resid)) + 
+  geom_point() +
+  geom_hline(yintercept = 0, color = "darkred") +
+  labs(x = "fitted", y = "residual")
+```
+
+```{r}
+#| label: stepwise AIC
+
+m_none <- lm(`Total Points in Tourney` ~ 1, data = all_past_MM)
+m_all <- lm(`Total Points in Tourney` ~ . - `Player Name` - `Team` - 
+              `Total GP in Tourney`, data = all_past_MM)
+
+stepAIC(m_none,
+        scope = list(lower = m_none, upper = m_all),
+        data = all_past_MM, direction = "forward")
+```
+
+```{r}
+#| label: regsubsets
+
+m_subsets <- regsubsets(`Total Points in Tourney` ~ . - `Player Name` - `Team` - 
+              `Total GP in Tourney`, 
+              data = all_past_MM,
+              nbest = 1, nvmax = 5)
+
+summary(m_subsets)$cp
+summary(m_subsets)
+```
+
+```{r}
+#| label: updated model
+
+m2 <- lm(`Total Points in Tourney` ~ `PPG (reg. season)` + `KenPom Rank` + 
+           `Adj. O (KP)` + `Adj. D (KP)` + `KenPom Rank` * `Adj. O (KP)` + 
+           `KenPom Rank` * `Adj. D (KP)`, 
+         data = all_past_MM)
+
+summary(m2)
+
+predictions_m2 <- predict(m2, newdata = all_past_MM)
+results <- data.frame(Name = all_past_MM$`Player Name` ,Actual = all_past_MM$`Total Points in Tourney`,
+                      Predicted = predictions_m2)
+```
+
+```{r}
+# Assuming df is your dataframe, and 'y' is the dependent variable
+
+# Splitting the data into training (80%) and testing (20%) sets
+set.seed(123) # Setting seed for reproducibility
+splitIndex <- createDataPartition(all_past_MM$`Total Points in Tourney`, 
+                                  p = 0.8, list = FALSE)
+trainData <- all_past_MM[splitIndex, ]
+testData <- all_past_MM[-splitIndex, ]
+
+# Fitting a linear model on the training data
+# Replace x1, x2, ... with your independent variables
+model <- lm(`Total Points in Tourney` ~ `PPG (reg. season)` + `KenPom Rank` + 
+           `Adj. O (KP)` + `Adj. D (KP)` + `KenPom Rank` * `Adj. O (KP)` + 
+           `KenPom Rank` * `Adj. D (KP)`, data = trainData)
+
+# Summary of the model
+summary(model)
+
+# Predicting on the test data
+predictions <- predict(model, newdata = testData)
+
+# Comparing predictions to the actual values
+comparison <- data.frame(Actual = testData$`Total Points in Tourney`, 
+                         Predicted = predictions)
+print(comparison)
+
+# You can also calculate performance metrics, such as Mean Squared Error (MSE)
+mse <- mean((predictions - testData$y)^2)
+print(paste("Mean Squared Error:", mse))
+
+```
+
+```{r}
+#| label: predicting high scorers
+
+logistic_data <- all_past_MM |>
+  mutate(
+    high_scorer = ifelse(`Total Points in Tourney` >= 80, 1, 0)
+  )
+
+logistic_model <- glm(high_scorer ~ `PPG (reg. season)` + 
+                        `KenPom Rank` + `Adj. O (KP)` + `Adj. D (KP)` + 
+                        `KenPom Rank` * `Adj. O (KP)` + 
+                        `KenPom Rank` * `Adj. D (KP)`, 
+                      data = logistic_data, family = "binomial")
+
+tidy(logistic_model)
+summary(logistic_model)
+
+predicted_probabilities <- predict(logistic_model, newdata = all_past_MM, type = "response")
+all_past_MM$predicted_high_scorer_prob = predicted_probabilities
+all_past_MM$predicted_high_scorer = ifelse(all_past_MM$predicted_high_scorer_prob > 0.4, 1, 0)
+
+```
+
+```{r}
+pred_log_odds <- augment(logistic_model)
+
+pred_log_odds <- pred_log_odds %>%
+  mutate(prob = exp(.fitted)/(1 + exp(.fitted)),
+         satisfy = ifelse(prob > 0.28, "Satisfied", 
+                           "Not satisfied")) %>%
+  dplyr::select(.fitted, prob, satisfy, high_scorer)
+
+table(pred_log_odds$satisfy, pred_log_odds$high_scorer)
+```
+
+```{r}
+#| label: 2024 predictions
+
+predictions_m2_2024 <- predict(m2, newdata = MM_2024)
+MM_2024$predicted_points = predictions_m2_2024
+
+pred_prob_2024 <- predict(logistic_model, newdata = MM_2024, type = "response")
+MM_2024$predicted_high_scorer_prob = pred_prob_2024
+
+write.csv(MM_2024, "results/predictions_2024.csv", row.names=FALSE)
+```
+
